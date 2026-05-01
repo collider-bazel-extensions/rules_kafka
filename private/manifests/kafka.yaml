@@ -88,8 +88,8 @@ metadata:
     helm.sh/chart: kafka-32.4.3
 type: Opaque
 data:
-  cluster-id: "UXJ3TjZiY2FmRWxKcnBoS0o1anVyWA=="
-  controller-0-id: "cE5SR1g1Y0lNWEVQZ1QwaENGYXVQbA=="
+  cluster-id: "bDZrbVdhbUJJcFlsNzNsakhPOXVQbw=="
+  controller-0-id: "TE1wV3NhY0ZVbXhpQXVkY0xXZUgyeA=="
 ---
 # Source: kafka/templates/controller-eligible/configmap.yaml
 apiVersion: v1
@@ -108,6 +108,7 @@ metadata:
 data:
   server.properties: |-
     advertised.listeners=CLIENT://advertised-address-placeholder:9092,INTERNAL://advertised-address-placeholder:9094
+    auto.create.topics.enable=true
     controller.listener.names=CONTROLLER
     controller.quorum.bootstrap.servers=kafka-controller-0.kafka-controller-headless.kafka.svc.cluster.local:9093
     inter.broker.listener.name=INTERNAL
@@ -115,7 +116,10 @@ data:
     listeners=CLIENT://:9092,INTERNAL://:9094,CONTROLLER://:9093
     log.dir=/bitnami/kafka/data
     logs.dir=/opt/bitnami/kafka/logs
+    offsets.topic.replication.factor=1
     process.roles=controller,broker
+    transaction.state.log.min.isr=1
+    transaction.state.log.replication.factor=1
 ---
 # Source: kafka/templates/controller-eligible/svc-headless.yaml
 apiVersion: v1
@@ -218,8 +222,8 @@ spec:
         app.kubernetes.io/component: controller-eligible
         app.kubernetes.io/part-of: kafka
       annotations:
-        checksum/configuration: c8d32b66faa3e83285d10bd7cc7d463ce8b7b427485e54d05e87cddd9bae1901
-        checksum/secret: 797afb0076fcc26778779fbe9d5c94936cbf768f929afb9b01685102d5e22a69
+        checksum/configuration: 86c0184b2916ff13ee415ce6fae40ea597b36529d6165fc3b3025aac78be21aa
+        checksum/secret: af4ee157c34c316dbe8c521ce259dddf93f1332e76f97aa96f93e2111112d4e1
     spec:
       
       automountServiceAccountToken: false
