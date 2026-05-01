@@ -44,24 +44,49 @@ echo "smoke_test: creating topic '$TOPIC'"
     --partitions 1 --replication-factor 1
 
 echo "smoke_test: producing payload to '$TOPIC'"
-echo "$PAYLOAD" | "${KCTL[@]}" -n "$NS" exec -i "$POD" -- \
+# `kafka-console-producer.sh` reads stdin one line at a time, sends each
+# record asynchronously, and on stdin EOF calls producer.close() which
+# blocks for in-flight acks. With `echo "$PAYLOAD" | ...`, EOF arrives
+# instantly — observed in CI: producer exits (no error) but the record
+# isn't durably committed before kubectl exec tears down. Two things
+# guard against this:
+#   - `acks=all` makes the broker wait for the in-sync replica set to
+#     write before acknowledging (RF=1 here so it's just the one
+#     broker; still, the producer waits for that ack before exit).
+#   - `(echo ...; sleep 3)` keeps stdin open for 3s past the message,
+#     giving producer.close() room to flush + ack before stdin EOF
+#     triggers JVM shutdown.
+( echo "$PAYLOAD"; sleep 3 ) | "${KCTL[@]}" -n "$NS" exec -i "$POD" -- \
     "$KAFKA_BIN/kafka-console-producer.sh" \
     --bootstrap-server "$BOOTSTRAP" \
-    --topic "$TOPIC"
-
-echo "smoke_test: consuming from offset 0 (max 1 message, 30s ceiling)"
-GOT=$("${KCTL[@]}" -n "$NS" exec "$POD" -- \
-    "$KAFKA_BIN/kafka-console-consumer.sh" \
-    --bootstrap-server "$BOOTSTRAP" \
     --topic "$TOPIC" \
-    --from-beginning \
-    --max-messages 1 \
-    --timeout-ms 30000 2>/dev/null | tr -d '\r')
+    --producer-property acks=all
+
+# Consumer with retry. A single 30s consumer call is racy if the broker
+# took >30s to advance the high-water-mark visible to a new consumer
+# group. Retry up to 3x; total ceiling 90s.
+echo "smoke_test: consuming from offset 0 (max 1 message)"
+GOT=""
+for attempt in 1 2 3; do
+  GOT=$("${KCTL[@]}" -n "$NS" exec "$POD" -- \
+      "$KAFKA_BIN/kafka-console-consumer.sh" \
+      --bootstrap-server "$BOOTSTRAP" \
+      --topic "$TOPIC" \
+      --from-beginning \
+      --max-messages 1 \
+      --timeout-ms 30000 2>/dev/null | tr -d '\r' | head -1)
+  if [[ -n "$GOT" ]]; then break; fi
+  echo "smoke_test: attempt $attempt got nothing; retrying"
+done
 
 if [[ "$GOT" != "$PAYLOAD" ]]; then
   echo "smoke_test: FAIL — payload didn't round-trip" >&2
   echo "  expected: '$PAYLOAD'" >&2
   echo "  got:      '$GOT'" >&2
+  echo "---- topic describe ----" >&2
+  "${KCTL[@]}" -n "$NS" exec "$POD" -- \
+      "$KAFKA_BIN/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" \
+      --describe --topic "$TOPIC" >&2 || true
   echo "---- broker logs (tail) ----" >&2
   "${KCTL[@]}" -n "$NS" logs "$POD" --tail=80 >&2 || true
   exit 1
