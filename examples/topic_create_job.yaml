@@ -1,0 +1,32 @@
+# One-shot Job that creates a Kafka topic via kafka-topics.sh.
+#
+# Useful as an explicit step in a composition before pointing
+# producers/consumers at the broker — relying on
+# `auto.create.topics.enable` is convenient but creates topics with
+# default partitions/replication-factor, which may not be what you
+# want in a real workload.
+#
+# `--if-not-exists` makes this idempotent — re-running the Job is a
+# no-op rather than an error.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-topic
+  namespace: kafka-clients
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create
+          image: docker.io/bitnami/kafka:4.0.0-debian-12-r10
+          command:
+            - /opt/bitnami/kafka/bin/kafka-topics.sh
+            - --bootstrap-server=kafka.kafka.svc.cluster.local:9092
+            - --create
+            - --if-not-exists
+            - --topic=example-topic
+            - --partitions=1
+            - --replication-factor=1

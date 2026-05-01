@@ -1,0 +1,25 @@
+"""Maintainer-only render flow."""
+
+load("@rules_helm//:defs.bzl", "helm_template")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# ---- 32.4.3 -----------------------------------------------------------------
+
+helm_template(
+    name = "render_kafka_32_4_3",
+    chart = ["@kafka_chart_32_4_3//:files"],
+    values = ["//config:kafka-values.yaml"],
+    namespace = "kafka",
+    release_name = "kafka",
+)
+
+sh_binary(
+    name = "render_writeback_32_4_3",
+    srcs = ["writeback.sh"],
+    data = [":render_kafka_32_4_3"],
+    args = [
+        "$(rootpath :render_kafka_32_4_3)",
+        "private/manifests/kafka.yaml",
+    ],
+    visibility = ["//visibility:public"],
+)

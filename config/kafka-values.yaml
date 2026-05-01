@@ -1,0 +1,105 @@
+# Render-time values for rules_kafka's pinned manifest.
+#
+# Smoke-fixture footprint: single combined controller+broker, KRaft mode
+# (no ZooKeeper), PLAINTEXT listeners (no SASL/auth), emptyDir storage.
+# Production deployments override every listener / replica / auth /
+# storage field.
+
+# ---- image ------------------------------------------------------------------
+# Bitnami's August-2025 catalog reorganization moved older debian-based
+# images out of `docker.io/bitnami/<image>` and into
+# `docker.io/bitnamilegacy/<image>` (publicly pullable, marked legacy).
+# The chart's default `image.repository: bitnami/kafka` resolves to a
+# tag that no longer exists in the primary namespace — pulls fail with
+# "not found." Pinning to `bitnamilegacy` until the chart is rebuilt
+# against Bitnami's hardened image namespace, or until we pivot to
+# `apache/kafka` (different config conventions).
+image:
+  repository: bitnamilegacy/kafka
+
+# ---- replicas ---------------------------------------------------------------
+# Bitnami's chart can run controllers in two shapes:
+#   - controllerOnly=false (default) — combined controller+broker pods
+#     deployed via the `controller` StatefulSet; `broker` StatefulSet
+#     is empty (broker.replicaCount=0).
+#   - controllerOnly=true — dedicated controllers (`controller` StS) +
+#     dedicated brokers (`broker` StS).
+# v0.1 smoke uses combined mode at 1 replica — minimal pod count, one
+# StatefulSet to wait on (`<release>-controller`).
+controller:
+  replicaCount: 1
+  controllerOnly: false
+  persistence:
+    enabled: false
+  logPersistence:
+    enabled: false
+  # Chart's `small` preset requests 50Mi ephemeral-storage and limits to
+  # 2Gi. kind's single-node default has tight ephemeral-storage
+  # allocatable + the init containers each request 50Mi too — pod
+  # fails to schedule with "Insufficient ephemeral-storage". `none`
+  # removes the resource block entirely so the smoke node has room.
+  resourcesPreset: "none"
+broker:
+  replicaCount: 0
+  persistence:
+    enabled: false
+  logPersistence:
+    enabled: false
+  resourcesPreset: "none"
+
+# Same story on the init containers — `nano` preset also requests
+# ephemeral-storage and pushes the pod's total over the kind node's
+# allocatable. Smoke fixture has no use for these limits anyway.
+defaultInitContainers:
+  volumePermissions:
+    resourcesPreset: "none"
+  prepareConfig:
+    resourcesPreset: "none"
+  autoDiscovery:
+    resourcesPreset: "none"
+
+# ---- listeners --------------------------------------------------------------
+# Default chart values enable SASL_PLAINTEXT on every listener. SASL adds
+# credential-management complexity (random password generation, secret
+# wiring, JAAS config) that's not v0.1's value-add. PLAINTEXT means the
+# smoke can connect to localhost:9092 without any auth setup. The chart
+# README explicitly notes "PLAINTEXT" is supported and is what the
+# smoke-test job hooks use.
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+  external:
+    protocol: PLAINTEXT
+
+# ---- chart smoke-fixture niceties -------------------------------------------
+# `service.type: ClusterIP` is the default; explicit for clarity.
+service:
+  type: ClusterIP
+
+# Chart's helm-test job (NOT our smoke — it's a hook that pings the
+# broker after install). Disable to avoid a stray Job in the manifest;
+# our smoke does its own functional check.
+extraDeploy: []
+
+# Network policies on by default and would block the smoke's
+# producer/consumer Pods (in another namespace) from reaching the
+# broker on 9092. Off for v0.1.
+networkPolicy:
+  enabled: false
+
+# Metrics off — JMX exporter sidecar isn't part of the smoke's value-add.
+metrics:
+  kafka:
+    enabled: false
+  jmx:
+    enabled: false
+
+# Auto-create topic on first produce — saves a kafka-topics.sh round-trip
+# in the smoke. Default is `true` upstream but the chart sometimes flips
+# it off; pin it explicit.
+extraConfig: |
+  auto.create.topics.enable=true

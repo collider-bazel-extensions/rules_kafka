@@ -1,0 +1,62 @@
+# Stand up a producer and a consumer pod in their own namespace,
+# pointing at the broker's in-cluster Service. Demonstrates the
+# "real workload" shape — workloads in another namespace produce
+# and consume against the broker via DNS.
+#
+# After applying:
+#   - The `producer` pod runs `kafka-console-producer.sh` reading
+#     stdin (here, fed by `tail -f /etc/hostname` to keep it alive
+#     and producing).
+#   - The `consumer` pod runs `kafka-console-consumer.sh` from offset
+#     0 with no exit, streaming records to its stdout (visible via
+#     `kubectl logs`).
+#
+# These pods deliberately don't have a clean exit signal — they're
+# meant to be observed via `kubectl logs`, not asserted on. The
+# smoke uses `kubectl exec` into the broker for assertable
+# round-trip semantics.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-clients
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: producer
+  namespace: kafka-clients
+  labels:
+    app: producer
+spec:
+  restartPolicy: Never
+  containers:
+    - name: producer
+      image: docker.io/bitnami/kafka:4.0.0-debian-12-r10
+      command: ['sh', '-c']
+      args:
+        - |
+          while true; do
+            echo "msg-$(date +%s)"
+            sleep 5
+          done | /opt/bitnami/kafka/bin/kafka-console-producer.sh \
+            --bootstrap-server kafka.kafka.svc.cluster.local:9092 \
+            --topic example-topic
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: consumer
+  namespace: kafka-clients
+  labels:
+    app: consumer
+spec:
+  restartPolicy: Never
+  containers:
+    - name: consumer
+      image: docker.io/bitnami/kafka:4.0.0-debian-12-r10
+      command:
+        - /opt/bitnami/kafka/bin/kafka-console-consumer.sh
+        - --bootstrap-server=kafka.kafka.svc.cluster.local:9092
+        - --topic=example-topic
+        - --from-beginning
