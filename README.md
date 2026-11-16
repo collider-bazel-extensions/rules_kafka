@@ -188,3 +188,11 @@ PRs welcome. Conventions match the sibling rule sets:
 - Multi-broker HA smoke (replicaCount: 3, replication-factor: 3, fault inject one)
 - Strimzi-based variant (operator + `Kafka`/`KafkaTopic` CRDs) — different family, same goal
 - Kafka Connect / Schema Registry / KRaft-mode tiered-storage compositions
+
+---
+
+## Requesting a new rules package
+
+Want Bazel rules for another tool or service?
+[Request a rules package](https://github.com/collider-bazel-extensions/.github/issues/new?template=request-a-rules-package.yml).
+The [organization page](https://github.com/collider-bazel-extensions) lists every package.
