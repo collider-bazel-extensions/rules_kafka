@@ -1,9 +1,12 @@
 # rules_kafka — design decisions
 
-Hermetic [Apache Kafka](https://kafka.apache.org/) install for Bazel
-test compositions. Same shape as `rules_loki` / `rules_grafana` /
-`rules_harbor` / `rules_external_secrets` — pure glue over `rules_kubectl`
-+ `rules_helm`.
+[Apache Kafka](https://kafka.apache.org/) for Bazel tests. Two families:
+
+- **Cluster install** (v0.1): same shape as `rules_loki` / `rules_grafana` /
+  `rules_harbor` / `rules_external_secrets` — pure glue over
+  `rules_kubectl` + `rules_helm`. Decisions 1-15 below.
+- **Per-test broker** (v0.2): the per-test-service shape of rules_pg's
+  `pg_server` and rules_valkey's `valkey_server`. Decisions 16-35 below.
 
 ## Decided
 
@@ -24,6 +27,45 @@ test compositions. Same shape as `rules_loki` / `rules_grafana` /
 | 13 | Cross-rule deps | `rules_kubectl` public dep. `rules_helm` + `rules_kind` + `rules_itest` + `rules_shell` dev-only. No cert-manager required (PLAINTEXT smoke; SASL/TLS smokes are deferred). | rules_loki precedent |
 | 14 | Naming | snake_case rules/macros, `MixedCaseInfo` providers (none in v0.1), `UPPER_SNAKE` constants. | All siblings |
 | 15 | Update workflow | `bash tools/render_kafka.sh <chart-version>` → thin shim. | rules_loki precedent |
+
+## Per-test broker (v0.2.0)
+
+Built for rules_openmeter (collider-bazel-extensions/.github#7): OpenMeter's
+ingest API produces to Kafka and its sink worker consumes with
+confluent-kafka-go (librdkafka), so a test needs a real broker next to
+`pg_server`, `valkey_server` and ClickHouse.
+
+| # | Decision | Choice | Why |
+|---|---|---|---|
+| 16 | Shape | `kafka_server` (long-running executable, writes `$TEST_TMPDIR/<name>.env` once ready), `kafka_server_health_check` (env file exists), `kafka_test` (sh_test macro + trampoline). Non-breaking: `kafka_install` / `kafka_health_check` unchanged. | rules_valkey's `valkey_server` / `valkey_health_check` / `valkey_test`. `kafka_health_check` was taken, hence `kafka_server_health_check`. |
+| 17 | Software | The Apache binary release `kafka_2.13-<ver>.tgz`, latest 4.x (4.4.0). `urls` = downloads.apache.org, then archive.apache.org (old releases leave downloads). | Upstream bits, not a container image or a distro build. 4.x: KRaft-only, no ZooKeeper. |
+| 18 | Pin | sha512 hex from the published `.sha512` (Apache publishes no sha256), converted in Starlark to an SRI `integrity` for `download_and_extract`. `tools/update_versions.sh [--check]` regenerates `private/versions.bzl` and verifies the archive hashes to it. | Verify against what Apache publishes, with no host `sha512sum` in the fetch. A unit test pins the conversion. |
+| 19 | Version selection | `kafka.version(version, sha512, urls, scala_version, strip_prefix)` in `//:extensions.bzl`; the root's tag wins, else rules_kafka's own, else `DEFAULT_VERSION`. One repo, `@kafka_dist`. Unpinned versions need `sha512`. | rules_zap / rules_argocd. One Kafka per build keeps runfiles and the ready helper simple. |
+| 20 | JVM | rules_java's remote JDK 21 (`@remotejdk21_<platform>//:jdk`), named directly by a `select` alias in `//private:jdk`, not resolved as a Java toolchain. | rules_zap's approach: no host Java, no `--java_runtime_version`. Kafka 4.x brokers need Java 17+; 21 is supported and is the newest LTS rules_java pins at 9.6.1. |
+| 21 | Laziness | The extension and the JDK repos are only fetched when a `kafka_server` is built. `defs.bzl` loads `@rules_java` (a source repo) and `@rules_shell`, not the JDK. CI's consumer job builds a `kafka_install`-only consumer and fails if `kafka_dist` or a `remotejdk*` repo was fetched. | A kind-only consumer shouldn't download 135 MB of Kafka and a JDK. |
+| 22 | Launcher | `private/launcher.py` (host `python3`, as rules_valkey). The wrapper resolves runfiles into variables, then execs it. | Free ports, signals, process groups and timeouts are clearer in Python than bash. |
+| 23 | Topology | Combined `process.roles=broker,controller`, `node.id=1`, `controller.quorum.bootstrap.servers` + `format --standalone` (a one-voter dynamic quorum, KIP-853). | Kafka 4.x's own `config/server.properties` shape. |
+| 24 | Listeners | `PLAINTEXT://127.0.0.1:<free>` and `CONTROLLER://127.0.0.1:<free>`; `advertised.listeners` = the bound ones. No other listeners, no SASL/TLS. | A client must reach exactly what it bootstraps from. Loopback only. |
+| 25 | Cluster id | 16 random bytes, URL-safe base64, no padding, not starting with `-` — what `kafka-storage.sh random-uuid` prints — generated in the launcher. | Saves a JVM start (~1-3 s) per broker. |
+| 26 | Single-node settings | Replication 1 everywhere (`default.replication.factor`, `min.insync.replicas`, offsets, transaction state + min ISR, share coordinator), `group.initial.rebalance.delay.ms=0`, and 1 partition (not 50) for `__consumer_offsets`, `__transaction_state`, `__share_group_state`. Fewer network/IO/background threads. | Testcontainers' Kafka does the same for offsets; a test's first consumer group is ready sooner. |
+| 27 | Topics | `auto_create_topics` (default on). `topics = ["name", "name:N"]` are created before the env file appears; analysis rejects bad names (Kafka's `[a-zA-Z0-9._-]{1,249}`, not `.`/`..`), partitions < 1, duplicates. | OpenMeter's sink worker subscribes to topics that may not have been produced to yet. |
+| 28 | Readiness | `KafkaReady.java` (compiled at build time with the pinned JDK's `javac` against `kafka-clients`, like rules_zap's driver): DescribeCluster lists a broker and a controller and ListTopics works; one CreateTopics request; then DescribeTopics until each topic has its partition count and a leader per partition. One JVM, not one `kafka-topics.sh` per topic. | Metadata answering is what clients need; per-topic CLI calls would cost a second each. A topic that already exists with another partition count fails. |
+| 29 | Broker config overrides | `properties` (string dict) appended to `server.properties`; the listener/KRaft/path keys and `auto.create.topics.enable` are rejected at analysis. `heap` → `-Xmx` (default 512m), `jvm_flags` → `KAFKA_OPTS`. | Users can tune retention etc. without breaking the loopback/single-node guarantees. |
+| 30 | JVM flags | `-XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xshare:auto -XX:-UsePerfData -Djava.io.tmpdir=<state>/tmp`. `KAFKA_JMX_OPTS` set to a harmless flag (kafka-run-class.sh enables the JMX agent when it's empty; the `jmxremote` property's presence alone starts it). `EXTRA_ARGS="-name kafkaServer"` (no `-loggc`). Caller `KAFKA_*`, `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `JMX_PORT`, `LOG_DIR` are dropped. | Start-up over throughput; no `/tmp/hsperfdata_<user>`; no JMX; a test's environment can't change the broker. `no_writes_test` fails if `-XX:-UsePerfData` is removed (checked by mutation). |
+| 31 | Paths | `$TEST_TMPDIR/<name>/{config,data,logs,tmp}`; `LOG_DIR` set for every Kafka script (they `mkdir -p $LOG_DIR`, default `<kafka>/logs`, i.e. in runfiles). | Nothing outside `$TEST_TMPDIR`. `no_writes_test` checks open-for-write fds, hsperfdata, /tmp, the distribution and the JDK. |
+| 32 | Process control | Every JVM (format, broker, ready helper) starts in its own session with `PR_SET_PDEATHSIG=SIGKILL` on Linux (Kafka's scripts `exec java`, which keeps it). Stop: SIGTERM by PID, wait up to 30 s, then SIGKILL to the process group. Never `pkill -f`. | rules_itest SIGKILLs a service's process group after `shutdown_timeout` (default 1 s) and Bazel's process-wrapper kills groups too; the JVM's own session keeps the shutdown ordered, PDEATHSIG covers a SIGKILLed launcher. |
+| 33 | Failures | Format failure, broker exit, timeout → exit 1 with the tail (40 lines) of `server.log`, else the JVM's `kafka.out`. "Address already in use" → retry with new ports (3 attempts). | Name the cause; port races between choosing and binding are real under `--jobs`. |
+| 34 | Shell helpers | `testlib.sh` over Kafka's CLI scripts (`kafka-console-producer/consumer`, `kafka-topics`) with the same hermetic env, using Kafka 4.x's `--command-property` / `--reader-property` / `--formatter-property`. Its path is in the env file (`KAFKA_TESTLIB`), so itest tests can use it too. | The task's "Kafka's own CLI scripts"; nothing to build. |
+| 35 | Tests offline | Broker tests are tagged `block-network`; `.bazelrc` sets `--sandbox_default_allow_network=false` for tests; `network_blocked_test` proves the sandbox is offline; CI relaxes Ubuntu 24.04's AppArmor userns restriction so linux-sandbox (not a networked fallback) runs. | Proves "nothing beyond loopback", as rules_zap does. |
+
+### Start-up time
+
+Two JVMs before the env file: `kafka-storage.sh format` (2-5 s here), then
+the broker plus the ready helper (5-10 s here). On this 16-core machine
+under load average ~22, total 8-15 s; on GitHub's runners 2.9-7.1 s. The launcher logs each phase.
+Options not taken: formatting in the broker JVM (Kafka has no such mode),
+AppCDS archives for Kafka's classpath (machine-specific, built at test
+time), GraalVM native image (not in the Apache release).
 
 ## Bitnami vs. Strimzi
 
@@ -106,7 +148,11 @@ node forms a one-vote quorum — degenerate but functional for a smoke.
 
 `tests/` and `tools/` are `export-ignore` (`.gitattributes`): their packages load dev-only modules (rules_itest, rules_kind, rules_shell, rules_helm), which made `@rules_kafka//...` unloadable for consumers. `REPO.bazel` `ignore_directories` would also hide them from this repo's own `bazel test`, so it isn't used. A `git_override` clone still contains them. CI's `consumer` job (`.github/consumer/check.sh`) checks the commit's `git archive`: the directories are absent and `@rules_kafka//...` loads for a consumer.
 
-## Deferred (not v0.1.0)
+## Deferred (not v0.2.0)
+
+- Per-test broker: SASL/TLS listeners, multi-node clusters, a
+  Schema Registry companion, Windows.
+
 
 - **SASL/SCRAM smoke** — re-enable SASL listeners; smoke a credentialled
   connect (auto-generated password from chart secret). Different code

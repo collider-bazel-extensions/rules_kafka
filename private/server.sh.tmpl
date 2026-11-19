@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# kafka_server wrapper: resolves runfiles, execs the launcher.
+# Substitution markers use __KEY__ syntax to avoid colliding with bash.
+set -euo pipefail
+
+if [[ -z "${RUNFILES_DIR:-}" ]]; then
+  if [[ -n "${TEST_SRCDIR:-}" && -d "${TEST_SRCDIR}" ]]; then RUNFILES_DIR="$TEST_SRCDIR"
+  elif [[ -d "${0}.runfiles" ]]; then RUNFILES_DIR="$(cd "${0}.runfiles" && pwd)"
+  fi
+  : "${RUNFILES_DIR:?kafka_server: no runfiles found; run it with bazel run / bazel test}"
+  export RUNFILES_DIR
+fi
+
+resolve() {
+  local p="$RUNFILES_DIR/$1"
+  [[ -e "$p" ]] || { echo "kafka_server: not in runfiles: $1" >&2; exit 1; }
+  printf '%s\n' "$p"
+}
+
+name='__NAME__'
+tmp="${TEST_TMPDIR:-}"
+if [[ -z "$tmp" ]]; then
+  # `bazel run`: no TEST_TMPDIR; use a fresh directory (removed on exit by
+  # nobody: the broker's data stays for inspection).
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/kafka_server.XXXXXX")"
+  echo "[kafka] TEST_TMPDIR not set; using $tmp" >&2
+fi
+
+# Resolve into variables first: a failing $(resolve) inside an argument
+# list would not stop the script under `set -e`.
+launcher="$(resolve '__LAUNCHER__')"
+start="$(resolve '__KAFKA_START__')"
+java="$(resolve '__JAVA__')"
+ready="$(resolve '__READY_JAR__')"
+testlib="$(resolve '__TESTLIB__')"
+cp="$ready"
+for c in __CLIENTS__; do cp="$cp:$(resolve "$c")"; done
+
+exec python3 "$launcher" serve \
+  --name "$name" \
+  --kafka-home "$(dirname "$(dirname "$start")")" \
+  --java-home "$(dirname "$(dirname "$java")")" \
+  --ready-classpath "$cp" \
+  --testlib "$testlib" \
+  --env-file "$tmp/$name.env" \
+  --state-dir "$tmp/$name" \
+  __OPTS__ "$@"

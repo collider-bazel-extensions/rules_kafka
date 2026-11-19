@@ -1,12 +1,51 @@
-"""rules_kafka — hermetic Apache Kafka install for Bazel test compositions."""
+"""rules_kafka — Apache Kafka for Bazel tests.
+
+  Per-test broker (no cluster):
+    kafka_server              — single-node KRaft broker on free 127.0.0.1
+                                ports; writes $TEST_TMPDIR/<name>.env once ready
+    kafka_server_health_check — pairs with kafka_server (itest_service)
+    kafka_test                — sh_test macro: auto-launched broker
+
+  Cluster install (kind / rules_kubectl):
+    kafka_install / kafka_health_check — Bitnami's Kafka chart, pre-rendered
+
+Pinned: Apache Kafka 4.4.0 (kafka_2.13 binary release, sha512) on
+rules_java's remote JDK 21; Bitnami kafka chart 32.4.3.
+"""
 
 module(
     name = "rules_kafka",
-    version = "0.1.2",
+    version = "0.2.0",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "platforms", version = "1.0.0")
+
+# rules_shell is part of the public surface — kafka_test is an sh_test
+# macro. Bazel 8+ removed `native.sh_test`.
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# kafka_server runs on rules_java's remote JDK 21, named directly (not
+# through Java toolchain resolution), so no host Java and no
+# --java_runtime_version flag is needed. Repositories are fetched lazily:
+# only the platform a kafka_server build needs, and nothing for a
+# kafka_install-only consumer.
+bazel_dep(name = "rules_java", version = "9.6.1")
+
+java_toolchains = use_extension("@rules_java//java:extensions.bzl", "toolchains")
+use_repo(
+    java_toolchains,
+    "remotejdk21_linux",
+    "remotejdk21_linux_aarch64",
+    "remotejdk21_macos",
+    "remotejdk21_macos_aarch64",
+)
+
+# The Apache Kafka binary release, as @kafka_dist. The root module's
+# kafka.version() wins; without one, rules_kafka's own applies.
+kafka = use_extension("//:extensions.bzl", "kafka")
+kafka.version(version = "4.4.0")
+use_repo(kafka, "kafka_dist")
 
 bazel_dep(name = "rules_kubectl", version = "0.1.0")
 git_override(
@@ -17,7 +56,6 @@ git_override(
 
 # ---- dev-only: smoke composition --------------------------------------------
 bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
-bazel_dep(name = "rules_shell", version = "0.8.0", dev_dependency = True)
 
 bazel_dep(name = "rules_kind", version = "0.3.0", dev_dependency = True)
 git_override(

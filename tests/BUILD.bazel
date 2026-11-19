@@ -1,6 +1,10 @@
 """Tests for rules_kafka.
 
-- Analysis test verifies the macro instantiates cleanly.
+- Analysis tests: kafka_install, kafka_server / health check / kafka_test
+  (providers, runfiles, launcher options, attribute errors), sha512 -> SRI.
+- Per-test broker (no container runtime): every test is tagged
+  block-network, so the broker, the readiness helper and the CLI tools see
+  loopback only (network_blocked_test proves the sandbox is offline).
 - Smoke composition: kind cluster + Bitnami Kafka (KRaft, single
   combined controller+broker, PLAINTEXT). Smoke `kubectl exec`s into
   the broker pod, creates a topic, produces a unique payload via
@@ -11,15 +15,219 @@
 """
 
 load("@rules_itest//:itest.bzl", "itest_service", "service_test")
-load("@rules_kafka//:defs.bzl", "kafka_health_check", "kafka_install")
+load(
+    "@rules_kafka//:defs.bzl",
+    "kafka_health_check",
+    "kafka_install",
+    "kafka_server",
+    "kafka_server_health_check",
+    "kafka_test",
+)
 load("@rules_kind//:defs.bzl", "kind_cluster", "kind_health_check")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load(":analysis_tests.bzl", "kafka_install_test_suite")
+load(":analysis_tests.bzl", "analysis_test_suite")
 
 # ---- analysis ---------------------------------------------------------------
 
-kafka_install_test_suite(name = "kafka_install_analysis")
+analysis_test_suite(name = "analysis_tests")
+
+# ---- per-test broker ----------------------------------------------------------
+
+_OFFLINE = ["block-network"]
+
+sh_test(
+    name = "network_blocked_test",
+    srcs = ["network_blocked_test.sh"],
+    tags = _OFFLINE,
+)
+
+sh_test(
+    name = "checksums_test",
+    srcs = ["checksums_test.sh"],
+    data = ["//private:versions.bzl"],
+    tags = _OFFLINE,
+)
+
+# Defaults: env, produce/consume round-trips, auto-created topic, keyed
+# records, a consumer group, the test's args.
+kafka_test(
+    name = "roundtrip_test",
+    srcs = ["roundtrip_test.sh"],
+    args = [
+        "one",
+        "'two words'",
+    ],
+    tags = _OFFLINE,
+)
+
+# Pre-created topics with partition counts; auto-create off.
+kafka_test(
+    name = "topics_test",
+    srcs = ["topics_test.sh"],
+    auto_create_topics = False,
+    topics = [
+        "events:3",
+        "audit",
+        "orders:2",
+    ],
+    tags = _OFFLINE,
+)
+
+# The trampoline stops the broker when the test ends.
+kafka_test(
+    name = "record_broker",
+    srcs = ["record_broker.sh"],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "cleanup_test",
+    size = "medium",
+    srcs = ["cleanup_test.sh"],
+    args = [
+        "$(rootpath //private:kafka_test_trampoline.sh)",
+        "$(rootpath :record_broker_kafka)",
+        "$(rootpath :record_broker_inner)",
+    ],
+    data = [
+        ":record_broker_inner",
+        ":record_broker_kafka",
+        "//private:kafka_test_trampoline.sh",
+    ],
+    tags = _OFFLINE,
+)
+
+# SIGTERM: clean stop; SIGKILL of the launcher: the JVM dies too.
+kafka_server(
+    name = "sigkill_server",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "sigkill_test",
+    size = "medium",
+    srcs = ["sigkill_test.sh"],
+    args = ["$(rootpath :sigkill_server)"],
+    data = [":sigkill_server"],
+    tags = _OFFLINE,
+)
+
+# Nothing written outside $TEST_TMPDIR.
+kafka_server(
+    name = "quiet_server",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "no_writes_test",
+    size = "medium",
+    srcs = ["no_writes_test.sh"],
+    args = ["$(rootpath :quiet_server)"],
+    data = [":quiet_server"],
+    tags = _OFFLINE,
+)
+
+# Start-up failures: named, with the log tail; nothing left running.
+kafka_server(
+    name = "bad_authorizer_server",
+    properties = {"authorizer.class.name": "no.such.Authorizer"},
+    tags = ["manual"],
+)
+
+kafka_server(
+    name = "bad_jvm_server",
+    jvm_flags = ["-XX:+NoSuchRulesKafkaOption"],
+    tags = ["manual"],
+)
+
+kafka_test(
+    name = "failing_kafka_test",
+    srcs = ["never_runs.sh"],
+    jvm_flags = ["-XX:+NoSuchRulesKafkaOption"],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "failure_test",
+    size = "medium",
+    srcs = ["failure_test.sh"],
+    args = [
+        "$(rootpath :bad_authorizer_server)",
+        "$(rootpath :bad_jvm_server)",
+        "$(rootpath //private:kafka_test_trampoline.sh)",
+        "$(rootpath :failing_kafka_test_kafka)",
+        "$(rootpath :failing_kafka_test_inner)",
+    ],
+    data = [
+        ":bad_authorizer_server",
+        ":bad_jvm_server",
+        ":failing_kafka_test_inner",
+        ":failing_kafka_test_kafka",
+        "//private:kafka_test_trampoline.sh",
+    ],
+    tags = _OFFLINE,
+)
+
+# rules_itest composition: two brokers as services in one test.
+kafka_server(
+    name = "kafka_a",
+    topics = ["shared:2"],
+    tags = ["manual"],
+)
+
+kafka_server_health_check(
+    name = "kafka_a_health",
+    server = ":kafka_a",
+    tags = ["manual"],
+)
+
+itest_service(
+    name = "kafka_a_svc",
+    exe = ":kafka_a",
+    health_check = ":kafka_a_health",
+    # Kafka's clean shutdown takes a few seconds; rules_itest's default
+    # (1s) would SIGKILL the launcher (the JVM still dies with it).
+    shutdown_timeout = "60s",
+    tags = ["manual"],
+)
+
+kafka_server(
+    name = "kafka_b",
+    topics = ["shared"],
+    tags = ["manual"],
+)
+
+kafka_server_health_check(
+    name = "kafka_b_health",
+    server = ":kafka_b",
+    tags = ["manual"],
+)
+
+itest_service(
+    name = "kafka_b_svc",
+    exe = ":kafka_b",
+    health_check = ":kafka_b_health",
+    shutdown_timeout = "60s",
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "two_brokers_test_bin",
+    srcs = ["two_brokers_test.sh"],
+    tags = ["manual"],
+)
+
+service_test(
+    name = "two_brokers_test",
+    size = "medium",
+    services = [
+        ":kafka_a_svc",
+        ":kafka_b_svc",
+    ],
+    tags = _OFFLINE,
+    test = ":two_brokers_test_bin",
+)
 
 # ---- smoke composition ------------------------------------------------------
 
