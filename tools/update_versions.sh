@@ -77,7 +77,7 @@ if command -v sha512sum >/dev/null; then
 else
     echo "$sha  $work/$tgz" | shasum -a 512 -c --quiet - >&2
 fi
-prefix="$(tar -tzf "$work/$tgz" | head -n 1 | cut -d/ -f1)"
+prefix="$(tar -tzf "$work/$tgz" | sed -n 1p | cut -d/ -f1)"  # sed reads it all: no SIGPIPE under pipefail
 [[ "$prefix" == "kafka_${SCALA}-${version}" ]] || { echo "unexpected top directory $prefix in $tgz" >&2; exit 1; }
 tar -tzf "$work/$tgz" "$prefix/libs/kafka-clients-${version}.jar" >/dev/null \
     || { echo "$tgz has no libs/kafka-clients-${version}.jar" >&2; exit 1; }

@@ -43,7 +43,7 @@ jobs:
       - name: Broker start-up times
         if: always()
         run: |
-          grep -rhoE 'Kafka [0-9.]+ ready on [^;]*' bazel-testlogs/tests/ | sed 's/ on 127.0.0.1:[0-9]* (controller [0-9]*)//' | sort | uniq -c || true
+          grep -rhoE --include=test.log 'Kafka [0-9.]+ ready on [^;]*' bazel-testlogs/tests/ | sed 's/ on 127.0.0.1:[0-9]* (controller [0-9]*)//' | sort | uniq -c || true
 
       - name: No broker JVMs left behind
         if: always()

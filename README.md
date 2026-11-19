@@ -137,9 +137,11 @@ SIGKILL to its process group after 30 s), removes the env file and exits
 
 Start-up is dominated by JVM start: two JVMs run before the env file
 appears (`kafka-storage.sh format`, then the broker plus a small readiness
-JVM). Measured on a shared 16-core machine: 8-15 s for one broker at load
-average ~22, 24-31 s with 8 brokers starting at once at load ~87. CI's
-"Broker start-up times" step prints the times on GitHub's runners. The launcher logs it:
+JVM). On GitHub's ubuntu-latest runners: 2.9-5.8 s (format 0.8-1.8 s,
+broker + readiness 2.1-4.0 s), including 8 brokers starting at once. On a
+shared 16-core machine: 8-15 s for one broker at load average ~22,
+24-31 s with 8 at once at load ~87. CI's "Broker start-up times" step
+prints them. The launcher logs it:
 `[kafka] Kafka 4.4.0 ready on 127.0.0.1:57705 (controller 59827) in 8.0s
 (format 2.8s, broker + readiness 5.2s)`.
 
