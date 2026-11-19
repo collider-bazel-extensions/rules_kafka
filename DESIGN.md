@@ -62,7 +62,7 @@ confluent-kafka-go (librdkafka), so a test needs a real broker next to
 
 Two JVMs before the env file: `kafka-storage.sh format` (2-5 s here), then
 the broker plus the ready helper (5-10 s here). On this 16-core machine
-under load average ~22, total 8-15 s; on GitHub's runners 2.9-5.8 s. The launcher logs each phase.
+under load average ~22, total 8-15 s; on GitHub's runners 2.9-7.1 s. The launcher logs each phase.
 Options not taken: formatting in the broker JVM (Kafka has no such mode),
 AppCDS archives for Kafka's classpath (machine-specific, built at test
 time), GraalVM native image (not in the Apache release).
