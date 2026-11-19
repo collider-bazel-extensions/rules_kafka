@@ -8,22 +8,51 @@ on:
   workflow_dispatch:
 
 jobs:
-  analysis:
-    name: bazel test (ubuntu-latest, analysis)
+  hermetic:
+    # Analysis tests and the per-test broker tests (kafka_server, kafka_test,
+    # rules_itest composition): Apache Kafka 4.4.0 on rules_java's remote
+    # JDK 21, no container runtime, network blocked.
+    name: bazel test (ubuntu-latest, analysis + per-test broker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-analysis
+          disk-cache: ${{ github.workflow }}-hermetic
           repository-cache: true
+
+      # The network-blocking linux-sandbox (the broker tests' block-network
+      # tag) needs unprivileged user namespaces; Ubuntu 24.04's AppArmor
+      # restricts them by default, and Bazel then falls back to a sandbox
+      # with network.
+      - name: Allow the linux-sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: bazel build //...
         run: bazel build //...
 
-      - name: bazel test (analysis only)
-        run: bazel test //... --test_tag_filters=-manual --test_output=errors
+      # --nocache_test_results: the broker tests run every time, never from
+      # the disk cache. network_blocked_test proves the sandbox is offline.
+      - name: bazel test //tests/...
+        run: bazel test //tests/... --test_tag_filters=-manual --test_output=errors --nocache_test_results
+
+      - name: Parallel brokers (4 runs each of two tests at once)
+        run: bazel test //tests:roundtrip_test //tests:topics_test --runs_per_test=4 --jobs=8 --nocache_test_results --test_output=errors
+
+      - name: Broker start-up times
+        if: always()
+        run: |
+          grep -rhoE 'Kafka [0-9.]+ ready on [^;]*' bazel-testlogs/tests/ | sed 's/ on 127.0.0.1:[0-9]* (controller [0-9]*)//' | sort | uniq -c || true
+
+      - name: No broker JVMs left behind
+        if: always()
+        run: |
+          left=$(pgrep -u "$(id -u)" -a java | grep -F 'kafka.Kafka' || true)
+          if [[ -n "$left" ]]; then echo "FAIL: Kafka JVMs left running: $left" >&2; exit 1; fi
+
+      - name: The Kafka pin matches upstream
+        run: tools/update_versions.sh "$(sed -n 's/^DEFAULT_VERSION = "\(.*\)"/\1/p' private/versions.bzl)" --check
 
       - name: Smoke composition builds
         run: bazel build //tests:smoke_test
@@ -32,7 +61,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: bazel-testlogs-analysis
+          name: bazel-testlogs-hermetic
           path: bazel-testlogs/
           if-no-files-found: ignore
 
@@ -67,7 +96,9 @@ jobs:
   consumer:
     # rules_kafka as a dependency, from the commit's release archive (git archive
     # honours .gitattributes export-ignore, as tag tarballs do): tests/, tools/ not
-    # shipped, and @rules_kafka//... loads.
+    # shipped, @rules_kafka//... loads, a kafka_install-only consumer fetches
+    # neither Kafka nor a JDK, a consumer kafka_test passes offline, and an
+    # unpinned kafka.version() fails.
     name: consumer (ubuntu-latest, git archive)
     runs-on: ubuntu-latest
     steps:
@@ -76,6 +107,9 @@ jobs:
         with:
           bazelisk-cache: true
           repository-cache: true
+
+      - name: Allow the linux-sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Consumer check
         run: .github/consumer/check.sh "$RUNNER_TEMP/consumer"
