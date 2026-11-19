@@ -61,7 +61,7 @@ archive_override(
     module_name = "rules_kafka",
     urls = ["https://github.com/collider-bazel-extensions/rules_kafka/archive/refs/tags/v0.2.0.tar.gz"],
     strip_prefix = "rules_kafka-0.2.0",
-    integrity = "INTEGRITY_AFTER_TAG",
+    integrity = "sha256-aOwLzVL5C/TyxLSwrcotsmqxHCBXY+B+KlMU3mWT88o=",
 )
 
 # rules_kafka depends on rules_kubectl, which isn't in the BCR either.
