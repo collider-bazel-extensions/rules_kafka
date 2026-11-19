@@ -1,0 +1,5 @@
+# Broker tests run with the network blocked (tagged block-network); this
+# makes every sandboxed test offline too. The kind smoke is tagged
+# requires-network.
+test --sandbox_default_allow_network=false
+test --test_output=errors

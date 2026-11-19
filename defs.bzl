@@ -1,6 +1,31 @@
-"""Public API for rules_kafka."""
+"""Public API for rules_kafka.
+
+Per-test broker (test-time, no cluster):
+  kafka_server              — a single-node KRaft broker on free 127.0.0.1
+                              ports; writes $TEST_TMPDIR/<name>.env once ready.
+  kafka_server_health_check — pairs with kafka_server for itest_service.
+  kafka_test                — sh_test macro: auto-launched broker + shell
+                              helpers over Kafka's CLI scripts.
+
+Cluster install (kind / rules_kubectl):
+  kafka_install / kafka_health_check — Bitnami's Kafka chart, pre-rendered.
+"""
 
 load("@rules_kubectl//:defs.bzl", "kubectl_apply", "kubectl_apply_health_check")
+load("//private:distribution.bzl", _KafkaDistributionInfo = "KafkaDistributionInfo")
+load(
+    "//private:server.bzl",
+    _KafkaServerInfo = "KafkaServerInfo",
+    _kafka_server = "kafka_server",
+    _kafka_server_health_check = "kafka_server_health_check",
+)
+load("//private:test.bzl", _kafka_test = "kafka_test")
+
+kafka_server = _kafka_server
+kafka_server_health_check = _kafka_server_health_check
+kafka_test = _kafka_test
+KafkaServerInfo = _KafkaServerInfo
+KafkaDistributionInfo = _KafkaDistributionInfo
 
 # Bitnami Kafka chart in KRaft + combined-mode (`controllerOnly: false`)
 # renders one StatefulSet per release: `<release>-controller`. Pods in

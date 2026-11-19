@@ -1,0 +1,93 @@
+"""Private build files for rules_kafka. Public surface lives in //:defs.bzl,
+which re-exports from here."""
+
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(":ready_helper.bzl", "kafka_ready_helper")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "KafkaReady.java",
+    "health_check.sh.tmpl",
+    "kafka_test_trampoline.sh",
+    "launcher.py",
+    "server.sh.tmpl",
+    "testlib.sh",
+    "versions.bzl",
+])
+
+# The JDK Kafka runs on: rules_java's remote JDK 21 for the platform, named
+# directly rather than resolved as a Java toolchain (no host Java, no
+# --java_runtime_version flag). Fetched only when a kafka_server is built.
+[config_setting(
+    name = name,
+    constraint_values = [
+        "@platforms//os:" + os,
+        "@platforms//cpu:" + cpu,
+    ],
+) for name, os, cpu in [
+    ("linux_x86_64", "linux", "x86_64"),
+    ("linux_aarch64", "linux", "aarch64"),
+    ("macos_x86_64", "macos", "x86_64"),
+    ("macos_aarch64", "macos", "aarch64"),
+]]
+
+alias(
+    name = "jdk",
+    actual = select(
+        {
+            ":linux_x86_64": "@remotejdk21_linux//:jdk",
+            ":linux_aarch64": "@remotejdk21_linux_aarch64//:jdk",
+            ":macos_x86_64": "@remotejdk21_macos//:jdk",
+            ":macos_aarch64": "@remotejdk21_macos_aarch64//:jdk",
+        },
+        no_match_error = "rules_kafka: no remote JDK for this platform; supported: linux and macos on x86_64 and aarch64",
+    ),
+)
+
+# The pinned (or root-selected) Kafka release, from the `kafka` extension.
+alias(
+    name = "kafka",
+    actual = "@kafka_dist//:kafka",
+)
+
+kafka_ready_helper(
+    name = "kafka_ready",
+    srcs = ["KafkaReady.java"],
+    kafka = ":kafka",
+)
+
+bzl_library(name = "versions", srcs = ["versions.bzl"])
+
+bzl_library(name = "integrity", srcs = ["integrity.bzl"])
+
+bzl_library(name = "repositories", srcs = ["repositories.bzl"], deps = [":integrity"])
+
+bzl_library(name = "distribution", srcs = ["distribution.bzl"])
+
+bzl_library(
+    name = "common",
+    srcs = ["common.bzl"],
+    deps = ["@rules_java//java/common"],
+)
+
+bzl_library(
+    name = "ready_helper",
+    srcs = ["ready_helper.bzl"],
+    deps = [":common", ":distribution"],
+)
+
+bzl_library(
+    name = "server",
+    srcs = ["server.bzl"],
+    deps = [":common", ":distribution"],
+)
+
+bzl_library(
+    name = "test",
+    srcs = ["test.bzl"],
+    deps = [
+        ":server",
+        "@rules_shell//shell:rules_bzl",
+    ],
+)
